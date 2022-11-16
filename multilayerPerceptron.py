@@ -1,144 +1,216 @@
 # module containing artificial neural network structure classes
-
 import numpy as np
 from functions import *
+rng = np.random.default_rng()
 
-# 
+
 class Node:
+    """
+    Class containing neuron functionality
 
+    Attributes
+    ----------
+    Wij : numpy array
+        node input weights
+    delWij_n_1 : numpy array
+        node input weight change from previous weight update
+    actFunc : function
+        computes node output from induced local field
+    actFuncGrad : function
+        computes gradient of node output for backpropagation
+    self.Yi : numpy array
+        vector input to node including constant value of 1. for bias
+        multiplication at position 0
+    self.vj : float
+        induced local field, sum(inputs x weights)
+    self.yj : float
+        node output computed during forward pass
+
+    """
     def __init__(self, numberInputs, actFunc):
+        """
+        Node initialisation, randomly assigns node weights
 
-        # initialise weights
-        # self.Wij = np.array([0.,0.,0.5])
-        # self.Wij = np.random.uniform(-1.0, 1.3, numberInputs+1)
-        # #np.random.rand(numberInputs+1) #rand
+        Parameters
+        ----------
+        numberInputs : int
+            number of inputs to node, excluding bias
+        actFunc : string
+            name of activation function to be used for node:
+            'relu', 'sigmoid', 'linear'
+
+        """
+        # initialise node weights and bias
         self.Wij = np.random.normal(0.0, 1.0, numberInputs+1)
+        self.delWij_n_1 = np.zeros(numberInputs + 1)
+        # assign activation function and gradient from functions module
         self.actFunc = globals()[actFunc]
         self.actFuncGrad = globals()[actFunc + 'Grad']
-        self.mu = 0.9 # momentum
-        self.delWij_n_1 = np.zeros(numberInputs+1)
-
-    def computeILF(self):
-        return np.inner(self.Wij, self.Yi)
 
     def computeNodeOutput(self, X):
+        """
+        Computes node output during forward pass
+
+        Parameters
+        ----------
+        X : numpy array
+            input to node during forward pass
+
+        Returns
+        -------
+        yj : float
+            node output
+
+        """
+        # insert constant value of 1. at position 0 for bias
+        # store intermediate computed values for backpropagation
         self.Yi = np.insert(X, 0, 1.)
-        self.vj = self.computeILF()
+        self.vj = self.computeInducedLocalField()
         self.yj = self.actFunc(self.vj)
-        # print(self.yj)
         return self.yj
 
-    def computeDelJ(self, ej, layerType, DEL_K, Wkj):
-        # computes local gradient for current node (scalar)
+    def computeInducedLocalField(self):
+        """ Computes induced local field as sum(inputs x weights) """
 
-        if layerType == 'hidden':
-            del_j = self.actFuncGrad(self.yj) * np.inner(DEL_K, Wkj)
-            # print(Wkj)
-            # print(f'hidden layer del j: {del_j}')
+        return np.inner(self.Yi, self.Wij)
 
-        elif layerType == 'output':
-            del_j = self.actFuncGrad(self.yj) * ej
-            # print(f'output layer del j: {del_j}')
+    def computeOutputDelJ(self, ej):
+        """
+        Computes local gradient of loss function of output layer node
 
-        return del_j
+        Parameters
+        ----------
+        ej : float
+            current node error
 
-    def weightUpdate(self, e, lr, layerType, DEL_K, Wkj):
-        # performs vector weight update for all weights of current node
+        """
+        return self.actFuncGrad(self.yj) * ej
 
-        del_j = self.computeDelJ(e, layerType, DEL_K, Wkj) #weightUpdate(E[idx], lr, 'hidden', DEL_K, Wkj)
+    def computeHiddenDelJ(self, DEL_K, Wkj):
+        """
+        Computes local gradient of loss function of hidden layer node
 
-        # momentum
-        momentum = 0.
-        momentum = self.mu * self.delWij_n_1
-        # compute delta weight vector
-        delWij = -1. * lr * del_j * self.Yi + momentum
-        # if np.any(delWij<0):
-        #     print('here')
-        # store delta weight term for next iteration momentum
+        Parameters
+        ----------
+        DEL_K : numpy array
+            local gradients of loss function of subsequent layer nodes
+        Wkj : numpy array
+            connection weights from current node to subsequent layer nodes
+
+        """
+        return self.actFuncGrad(self.yj) * np.inner(DEL_K, Wkj)
+
+    def weightUpdate(self, ej, DEL_K, Wkj, lr, mu):
+        """
+        Performs backpropagation weight update for current node
+
+        Parameters
+        ----------
+        ej : float or None
+            current node error
+        DEL_K : numpy array or None
+            local gradients of loss function of subsequent layer nodes
+        Wkj : numpy array or None
+            connection weights from current node to subsequent layer nodes
+        lr : float
+            weight update step size (learning rate)
+        mu : float
+            weight update momentum term
+
+        Returns
+        -------
+        del_j : float
+            current node local gradient of loss function
+        Wij_n_1[1:] : numpy array
+            current node input connection weights prior to weight update,
+            do not pass up bias term at position 0
+
+        """
+        # local gradient computation different for output and hidden layers
+        if ej:
+            del_j = self.computeOutputDelJ(ej)
+        else:
+            del_j = self.computeHiddenDelJ(DEL_K, Wkj)
+        # compute momentum term based on previous weight update step
+        momentum = mu * self.delWij_n_1
+        # compute weight update step
+        delWij = lr * del_j * self.Yi + momentum
+        # delWij = -1. * lr * del_j * self.Yi + momentum
+        # store weight update step for next iteration's momentum term
         self.delWij_n_1 = delWij.copy()
-        # store weights pre-update to pass back for previous layer weight update
+        # store weights prior to update for preceeding layer's weight update
         Wij_n_1 = self.Wij.copy()
-        # perform weight update
+        # perform weight update step
         self.Wij += delWij
-        # regularistation
+        # perform weights regularisation
         # self.Wij = self.Wij / np.linalg.norm(self.Wij, 2)
+        return del_j, Wij_n_1[1:]
 
-        # if np.any(self.Wij > Wij_n_1):
-        #     print('new bigger than old')
-
-        return del_j, Wij_n_1[1:] #Wij_n_1[1:] # don't want to pass up the bias
 
 class Layer:
     def __init__(self, numberInputs, numberNodes, activationFunc):
-
         self.actFunc = activationFunc
-
         if activationFunc == 'softmax':
-            self.nodes = [Node(numberInputs, 'linear') for n in range(numberNodes)]
+            self.nodes = [Node(numberInputs, 'linear')
+                          for _ in range(numberNodes)]
         else:
-            self.nodes = [Node(numberInputs, activationFunc) for n in range(numberNodes)]
-
+            self.nodes = [Node(numberInputs, activationFunc)
+                          for _ in range(numberNodes)]
         self.W_matrix = np.zeros((numberNodes, numberInputs))
 
     def computeLayerOutput(self, layerInputArray):
         if self.actFunc == 'softmax':
-            layerOutputArray = np.array([node.computeNodeOutput(layerInputArray) for node in self.nodes])
-            smax = self.softmax(layerOutputArray)
+            layerOutputArray = np.array(
+                [node.computeNodeOutput(layerInputArray)
+                 for node in self.nodes])
+            smax = softmax(layerOutputArray)
             return(smax)
-
         else:
-            layerOutputArray = np.array([node.computeNodeOutput(layerInputArray) for node in self.nodes])
+            layerOutputArray = np.array(
+                [node.computeNodeOutput(layerInputArray)
+                 for node in self.nodes])
             return layerOutputArray
 
-    def softmax(self, V):
-        return (np.exp(V) / (np.exp(V).sum()))
-
-    def outputWeightUpdate(self, E, lr):
-
+    def outputWeightUpdate(self, E, lr, mu):
         del_jList = []
         for idx in range(len(self.nodes)):
-            del_j, Wij_n_1 = self.nodes[idx].weightUpdate(E[idx], lr, 'output', None, None)
+            del_j, Wij_n_1 = self.nodes[idx].weightUpdate(
+                E[idx], None, None, lr, mu,
+            )
             del_jList.append(del_j)
             # weights matrix contains this layers weights pre-update
             # each row corresponds to recieving node
             # each col corresponds to origin node
             self.W_matrix[idx] = Wij_n_1.copy()
-
         self.DEL_J = np.array(del_jList)
-
-
         return self.DEL_J, self.W_matrix
 
-    def hiddenWeightUpdate(self, lr, DEL_K, WKJ):
-
+    def hiddenWeightUpdate(self, DEL_K, WKJ, lr, mu):
         del_jList = []
         for idx in range(len(self.nodes)):
-            del_j, Wij_n_1 = self.nodes[idx].weightUpdate(None, lr, 'hidden', DEL_K, WKJ[:, idx])
+            del_j, Wij_n_1 = self.nodes[idx].weightUpdate(
+                None, DEL_K, WKJ[:, idx], lr, mu,
+            )
             del_jList.append(del_j)
             self.W_matrix[idx] = Wij_n_1.copy()
         self.DEL_J = np.array(del_jList)
-
         return self.DEL_J, self.W_matrix
 
     def __str__(self):
-
         str = ''
-
         for i, node in enumerate(self.nodes):
             str += f'Node {i} weights: {node.Wij}\n'
-
         return str
 
+
 class MultilayerPerceptron:
-    def __init__(self, type, inputLayer, hiddenLayers, outputLayer, learningRate, lossFunction):
-
-        self.type = type
-
+    def __init__(self, inputLayer, hiddenLayers, outputLayer,
+                 learningRate, momentum, lossFunction):
         self.inputLayer = inputLayer
         self.hiddenLayers = hiddenLayers
         self.outputLayer = outputLayer
-
         self.lr = learningRate
+        self.mu = momentum
         self.lossFunc = lossFunction
 
     def forwardPass(self, X):
@@ -149,67 +221,64 @@ class MultilayerPerceptron:
         return Y
 
     def backwardPass(self, E):
-
-        DEL_K, WKJ = self.outputLayer.outputWeightUpdate(E, self.lr)
+        DEL_K, WKJ = self.outputLayer.outputWeightUpdate(E, self.lr, self.mu)
         for layer in reversed(self.hiddenLayers):
-            DEL_K, WKJ = layer.hiddenWeightUpdate(self.lr, DEL_K, WKJ)
-        DEL_K, WKJ = self.inputLayer.hiddenWeightUpdate(self.lr, DEL_K, WKJ)
+            DEL_K, WKJ = layer.hiddenWeightUpdate(DEL_K, WKJ,
+                                                  self.lr, self.mu)
+        DEL_K, WKJ = self.inputLayer.hiddenWeightUpdate(DEL_K, WKJ,
+                                                        self.lr, self.mu)
 
-    def train(self, data, epochs):
-
+    def train(self, data, epochs, verbose=True):
         trainingHistory = []
-
         for epoch in range(epochs):
-            totalEpochLoss=0.
-
+            totalEpochLoss = 0.
+            rng.shuffle(data)
             for idx in range(data.shape[0]):
-
                 X = data[idx, :-1]
-                tru = data[idx, -1]
-                Y = self.forwardPass(X)
-                Y = np.array([1-Y[0], Y[0]])
-
-                # create desired vector (0s and 1 at index of correct class)
-                D = np.zeros(2)
-                D[int(data[idx, -1])] = 1.
-
-                # if epoch % int(epochs/5) == 0:
-            #         print(f'Epoch: {epoch}')
-            #         self.test(data)
-                loss = self.lossFunc(D, Y)
+                predY = self.forwardPass(X)
+                targY = data[idx, -1]
+                loss = self.lossFunc(targY, predY)
                 totalEpochLoss += loss
-
-                self.backwardPass(np.array([np.sign(Y[1]-tru)*loss]))
-
-            meanEpochLoss = totalEpochLoss/data.shape[0]
+                # multiclass
+                if predY.shape[0] > 1:
+                    targY = (np.array(
+                        [1 if idx == targY
+                            else 0 for idx in range(predY.shape[0])]))
+                    self.backwardPass((targY - predY) * loss)
+                # binary
+                else:
+                    self.backwardPass(np.sign(targY - predY) * loss)
+            meanEpochLoss = totalEpochLoss / data.shape[0]
             trainingHistory.append(meanEpochLoss)
             if meanEpochLoss < 0.1:
-                    print(f'Early stopping at epoch: {epoch}')
-                    break
-            # if epochs > 5:
-            #     if epoch % int(epochs/5) == 0:
-            #         print(f'Epoch: {epoch}')
-            #         self.test(data)
+                print(f'Early stopping at epoch: {epoch}')
+                break
+            if verbose:
+                if epoch % int(epochs//5) == 0:
+                    print(f'Epoch: {epoch}')
+                    predArr = self.test(data[:, :-1])
+                    print(f'Classification accuracy: \
+{((predArr == data[:, -1]).sum() * 100 / data.shape[0]):.1f}%')
         return trainingHistory
 
-    def test(self, data):
+    def test(self, X):
         predList = []
-        for idx in range(data.shape[0]):
-            Y = self.forwardPass(data[idx, :-1])
-            if Y[0] > 0.5:
-                prediction = 1.
+        for idx in range(X.shape[0]):
+            predY = self.forwardPass(X[idx])
+            # multiclass
+            if predY.shape[0] > 1:
+                predictedClass = np.argmax(predY)
+            # binary
             else:
-                prediction = 0.
-
-            predList.append(prediction)
-        predictions = np.array(predList)
-
-        print(f'Classification accuracy: {(predictions == data[:, -1]).sum()*100 / data.shape[0]}%') #:.1f
-
-        return predictions
+                if predY[0] > 0.5:
+                    predictedClass = 1.
+                else:
+                    predictedClass = 0.
+            predList.append(predictedClass)
+        predArr = np.array(predList)
+        return predArr
 
     def __str__(self):
-
         str = ''
         print('Input layer:')
         print(self.inputLayer)
@@ -219,4 +288,3 @@ class MultilayerPerceptron:
         print('Output layer:')
         print(self.outputLayer)
         return str
-
